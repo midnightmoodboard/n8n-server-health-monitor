@@ -1,0 +1,299 @@
+{
+  "name": "Server Health Monitor - Native Nodes Complete",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes", 
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Every 15 Minutes", 
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "postgresPasswordAuth",
+        "host": "getfoundstocks-postgres-prod",
+        "database": "postgres",
+        "user": "postgres",
+        "password": "YOUR_POSTGRES_PASSWORD",
+        "operation": "executeQuery",
+        "query": "SELECT version(), current_timestamp, (SELECT count(*) FROM pg_stat_activity) as connections;"
+      },
+      "id": "check-postgres",
+      "name": "Check PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [460, 150],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "https://grafana.getfoundstocks.com/api/health",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "check-grafana-health",
+      "name": "Check Grafana Health",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 250],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "https://ollama.getfoundstocks.com/api/health",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "check-ollama",
+      "name": "Check Ollama AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 350],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "https://letta.getfoundstocks.com/api/health",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "check-letta",
+      "name": "Check Letta AI Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 450],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "https://prometheus.getfoundstocks.com/api/v1/query?query=up",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "check-prometheus",
+      "name": "Check Prometheus",
+      "type": "n8n-nodes-base.httpRequest", 
+      "typeVersion": 4.2,
+      "position": [460, 550],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "https://n8n.getfoundstocks.com/healthz",
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "id": "check-n8n-health",
+      "name": "Check N8N Health",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 650],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "command": "docker ps --format '{{.Names}}:{{.Status}}:{{.Ports}}' | grep getfoundstocks"
+      },
+      "id": "check-docker-containers",
+      "name": "Check Docker Containers",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [460, 750],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const timestamp = new Date().toISOString();\nconst executionId = $execution.id;\nconst results = [];\n\n// Process PostgreSQL health\nif ($input.all()[0]) {\n  const pgResult = $input.all()[0].json;\n  const isHealthy = !pgResult.error && pgResult.version;\n  results.push({\n    json: {\n      service_name: \"PostgreSQL Database\",\n      service_type: \"Database\",\n      status_code: isHealthy ? 200 : 0,\n      health_status: isHealthy ? \"Healthy\" : \"Error\",\n      response_time_ms: 0,\n      timestamp: timestamp,\n      execution_id: executionId,\n      error_details: pgResult.error ? pgResult.error.message : \"None\",\n      check_type: \"Native PostgreSQL Query\",\n      metadata: isHealthy ? `Connections: ${pgResult.connections || 0}` : \"Connection failed\"\n    }\n  });\n}\n\n// Process HTTP-based services\nconst httpServices = [\n  { index: 1, name: \"Grafana Monitoring\", type: \"Monitoring\" },\n  { index: 2, name: \"Ollama AI Server\", type: \"AI Service\" },\n  { index: 3, name: \"Letta AI Agent\", type: \"AI Service\" }, \n  { index: 4, name: \"Prometheus Metrics\", type: \"Monitoring\" },\n  { index: 5, name: \"N8N Workflow Engine\", type: \"Automation\" }\n];\n\nhttpServices.forEach(service => {\n  if ($input.all()[service.index]) {\n    const result = $input.all()[service.index].json;\n    let isHealthy = false;\n    let statusCode = 0;\n    let responseTime = 0;\n    let errorDetails = \"\";\n    \n    if (result.error) {\n      errorDetails = result.error.message || \"Connection failed\";\n    } else if (result.statusCode) {\n      statusCode = result.statusCode;\n      isHealthy = statusCode >= 200 && statusCode < 400;\n      responseTime = result.responseTime || 0;\n      if (!isHealthy) errorDetails = `HTTP ${statusCode}`;\n    }\n    \n    results.push({\n      json: {\n        service_name: service.name,\n        service_type: service.type,\n        status_code: statusCode,\n        health_status: isHealthy ? \"Healthy\" : \"Error\",\n        response_time_ms: responseTime,\n        timestamp: timestamp,\n        execution_id: executionId,\n        error_details: errorDetails,\n        check_type: \"HTTP Health Check\",\n        metadata: isHealthy ? `Response: ${responseTime}ms` : \"Service unavailable\"\n      }\n    });\n  }\n});\n\n// Process Docker containers\nif ($input.all()[6]) {\n  const dockerOutput = $input.all()[6].json.stdout || '';\n  const lines = dockerOutput.split('\\n').filter(line => line.trim());\n  \n  const expectedContainers = [\n    'getfoundstocks-n8n-prod',\n    'getfoundstocks-postgres-prod', \n    'getfoundstocks-grafana-prod',\n    'getfoundstocks-ollama-prod',\n    'getfoundstocks-traefik-prod'\n  ];\n  \n  expectedContainers.forEach(containerName => {\n    const containerLine = lines.find(line => line.includes(containerName));\n    const isRunning = containerLine && containerLine.includes('Up');\n    const shortName = containerName.replace('getfoundstocks-', '').replace('-prod', '');\n    \n    results.push({\n      json: {\n        service_name: `Docker: ${shortName}`,\n        service_type: \"Container\",\n        status_code: isRunning ? 200 : 0,\n        health_status: isRunning ? \"Healthy\" : \"Down\",\n        response_time_ms: 0,\n        timestamp: timestamp,\n        execution_id: executionId,\n        error_details: isRunning ? \"None\" : \"Container not running\",\n        check_type: \"Docker Container Status\",\n        metadata: containerLine || \"Container not found\"\n      }\n    });\n  });\n}\n\nreturn results;"
+      },
+      "id": "process-health-results",
+      "name": "Process Health Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "url": "https://api.notion.com/v1/pages",
+        "httpMethod": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_NOTION_API_TOKEN"
+            },
+            {
+              "name": "Notion-Version",
+              "value": "2022-06-28"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"parent\": {\n    \"database_id\": \"YOUR_HEALTH_DATABASE_ID\"\n  },\n  \"properties\": {\n    \"Name\": {\n      \"title\": [\n        {\n          \"text\": {\n            \"content\": \"{{ $json.service_name }}\"\n          }\n        }\n      ]\n    },\n    \"Status\": {\n      \"select\": {\n        \"name\": \"{{ $json.health_status }}\"\n      }\n    },\n    \"Check Time\": {\n      \"date\": {\n        \"start\": \"{{ $json.timestamp }}\"\n      }\n    },\n    \"Error Details\": {\n      \"rich_text\": [\n        {\n          \"text\": {\n            \"content\": \"{{ $json.error_details }}\"\n          }\n        }\n      ]\n    },\n    \"Type\": {\n      \"select\": {\n        \"name\": \"{{ $json.check_type }}\"\n      }\n    }\n  }\n}",
+        "options": {}
+      },
+      "id": "log-health-notion",
+      "name": "Log to Health Database",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 300],
+      "continueOnFail": true
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Check PostgreSQL",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Grafana Health",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Ollama AI",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Letta AI Agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Prometheus",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check N8N Health",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Docker Containers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "Process Health Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Grafana Health": {
+      "main": [
+        [
+          {
+            "node": "Process Health Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Ollama AI": {
+      "main": [
+        [
+          {
+            "node": "Process Health Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Letta AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Process Health Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Prometheus": {
+      "main": [
+        [
+          {
+            "node": "Process Health Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check N8N Health": {
+      "main": [
+        [
+          {
+            "node": "Process Health Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Docker Containers": {
+      "main": [
+        [
+          {
+            "node": "Process Health Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Health Results": {
+      "main": [
+        [
+          {
+            "node": "Log to Health Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "UWxTTsLziUhFVlC6"
+  },
+  "staticData": null
+}
